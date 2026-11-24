@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, List
 
 import azure.cognitiveservices.speech as speechsdk
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Response
 from fastapi.responses import JSONResponse
 
 from pydantic import BaseModel
@@ -17,6 +17,8 @@ from azure.core.exceptions import HttpResponseError
 from azure.ai.textanalytics import TextAnalyticsClient
 
 import re
+
+import base64
 
 load_dotenv()
 
@@ -371,14 +373,26 @@ async def process(audio: UploadFile = File(...)) -> JSONResponse:
     """
     topics = analysis.get("key_topics", [])
     tts_summary = f"Your memo mentions {len(topics)} key topics: "
-    for i in range(0, len(topics) - 1):
-        tts_summary += topics[i] + ", "
-    
-    tts_summary += "and " + topics[len(topics) - 1] + ". "
+    #TODO if length is 1, should not be a list.
+    if (len(topics) > 1):
+        for i in range(0, len(topics) - 1):
+            tts_summary += topics[i] + ", "
+        tts_summary += "and " + topics[len(topics) - 1] + ". "
+    else: 
+        tts_summary += topics[0] + ". "
     overall_tone = analysis.get("sentiment", {}).get("overall", "neutral")
     tts_summary += f"The overall tone is {overall_tone}. "
     #TODO not sure how to do the people and org thing
 
+    #TODO maybe should not be plural by default
+    tts_summary += f"You have {len(action_items)} action items. "
+    #todo, all action items are full sentances (end with periods)
+    if (len(action_items) > 1):
+        for i in range(0, len(action_items) - 1):
+            tts_summary += action_items[i].get("task") + ", "
+        tts_summary += "and " + action_items[len(action_items) - 1].get("task") + ". "
+    else:
+        tts_summary += action_items[0].get("task")
     #return all results as a json summary
     result = {
         "pipeline_step_1": audio_results,
@@ -456,3 +470,57 @@ async def extract_action_items( transcript: str, nlp_data: Dict[str, Any] ) -> L
             )
 
     return action_items
+
+"""
+summary speech-to-text
+"""
+
+
+class SummaryRequest(BaseModel):
+    summary: str
+
+def synthesize_text_to_mp3(text: str, voice_name: str = "en-US-GuyNeural") -> bytes:
+    speech_config = speechsdk.SpeechConfig(subscription=os.environ.get("AZURE_SPEECH_KEY"), region=os.environ.get("AZURE_SPEECH_REGION"))
+    
+    # 1. Set Neural Voice
+    speech_config.speech_synthesis_voice_name = voice_name
+    
+    # 2. Set Output Format to 16kHz 32kbps Mono MP3
+    speech_config.set_speech_synthesis_output_format(
+        speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+    )
+
+    # audio_config=None keeps the output in memory instead of playing on default hardware
+    synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+    result = synthesizer.speak_text_async(text).get()
+
+    if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
+        return result.audio_data
+    elif result.reason == speechsdk.ResultReason.Canceled:
+        cancellation = result.cancellation_details
+        raise RuntimeError(f"Synthesis canceled: {cancellation.reason} - {cancellation.error_details}")
+
+"""
+# Approach A: Return Base64-encoded audio in a JSON response
+@app.post("/api/summary")
+def get_summary_json(payload: SummaryRequest):
+    try:
+        audio_bytes = synthesize_text_to_mp3(payload.summary)
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        return {
+            "summary": payload.summary,
+            "audioBase64": audio_b64,
+            "mimeType": "audio/mpeg"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+"""
+
+# Approach B: Stream binary MP3 directly to an HTML5 <audio> tag
+@app.get("/summary-audio")
+def get_summary_audio(text: str = "Here is your generated summary."):
+    try:
+        audio_bytes = synthesize_text_to_mp3(text)
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
