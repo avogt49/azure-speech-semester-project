@@ -82,6 +82,8 @@ def _run_continuous_recognition(file_path: str, ext: str) -> Dict[str, Any]:
     transcript_segments: List[str] = []
     words_with_confidence: List[Dict[str, Any]] = []
     detected_language: str = "unknown"
+    total_speech_ticks: int = 0
+    segment_confidences: List[float] = []
     error_message: str | None = None
 
     # Use an asyncio/threading event to block until the audio stream finishes
@@ -90,7 +92,7 @@ def _run_continuous_recognition(file_path: str, ext: str) -> Dict[str, Any]:
     done_event = threading.Event()
 
     def on_recognized(evt: speechsdk.SpeechRecognitionEventArgs) -> None:
-        nonlocal detected_language
+        nonlocal detected_language, total_speech_ticks, segment_confidences
         if evt.result.reason == speechsdk.ResultReason.RecognizedSpeech:
             transcript_segments.append(evt.result.text)
 
@@ -98,6 +100,9 @@ def _run_continuous_recognition(file_path: str, ext: str) -> Dict[str, Any]:
             auto_detect_result = speechsdk.AutoDetectSourceLanguageResult(evt.result)
             if auto_detect_result.language:
                 detected_language = auto_detect_result.language
+
+            # Track duration in 100-nanosecond ticks
+            total_speech_ticks += evt.result.duration
 
             # Parse detailed JSON payload for per-word confidence scores
             raw_json = evt.result.properties.get(
@@ -107,6 +112,10 @@ def _run_continuous_recognition(file_path: str, ext: str) -> Dict[str, Any]:
                 try:
                     detailed = json.loads(raw_json)
                     nbest = detailed.get("NBest", [])
+                    if nbest:
+                        top_result = nbest[0]
+                        if "Confidence" in top_result:
+                            segment_confidences.append(float(top_result["Confidence"]))
                     if nbest and isinstance(nbest[0].get("Words"), list):
                         for w in nbest[0]["Words"]:
                             words_with_confidence.append(
@@ -147,12 +156,23 @@ def _run_continuous_recognition(file_path: str, ext: str) -> Dict[str, Any]:
 
     if error_message:
         raise RuntimeError(error_message)
+    
+    # Convert ticks to seconds (uses total spoken audio; swap to max_end_ticks for span up to last word)
+    # 10_000_000 ticks per second
+    duration_seconds = round(total_speech_ticks / 10_000_000, 2)
+
+    # Calculate overall confidence (average of segment confidences)
+    overall_confidence = (
+        round(sum(segment_confidences) / len(segment_confidences), 4)
+        if segment_confidences
+        else 0.0
+    )
 
     #TODO missing several sections - durationSeconds, confidence
     return {
         "transcript": " ".join(transcript_segments).strip(),
-        "duration_seconds":30,
-        "confidence":0.8,
+        "duration_seconds": duration_seconds,
+        "confidence": overall_confidence,
         "language": detected_language,
         "words": words_with_confidence,
     }
