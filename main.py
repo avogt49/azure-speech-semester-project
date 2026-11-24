@@ -16,6 +16,8 @@ from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 from azure.ai.textanalytics import TextAnalyticsClient
 
+import re
+
 load_dotenv()
 
 app = FastAPI(title="Azure Speech Semester Project")
@@ -357,7 +359,8 @@ pipeline - process
 async def process(audio: UploadFile = File(...)) -> JSONResponse:
     audio_results = await transcribe_audio(audio)
     payload = TranscriptRequest(**audio_results)
-    analysis = await analyze(payload)    
+    analysis = await analyze(payload)   
+    action_items = await extract_action_items(audio_results.get("transcript"), analysis) 
 
     #generate tts summary
     """
@@ -380,7 +383,76 @@ async def process(audio: UploadFile = File(...)) -> JSONResponse:
     result = {
         "pipeline_step_1": audio_results,
         "pipeline_step_2": analysis,
+        "action_items": action_items,
         "tts_summary": tts_summary
     }
     return JSONResponse(status_code=200, content=result)
 
+
+"""
+extract action items
+"""
+
+# --- Response Schemas ---
+class ActionItem(BaseModel):
+    task: str
+    assignee: Optional[str] = None
+    due_date: Optional[str] = None
+    related_topics: List[str] = []
+    source_sentence: str
+
+# --- Action Item Extraction Logic ---
+ACTION_PATTERNS = re.compile(
+    r"\b(need to|needs to|have to|has to|must|should|will|going to|"
+    r"follow up|send|email|call|schedule|review|update|create|prepare|"
+    r"submit|check|finalize|reach out|set up|complete|finish|share|assign)\b",
+    re.IGNORECASE,
+)
+
+@app.post("/extract-action-items")
+async def extract_action_items( transcript: str, nlp_data: Dict[str, Any] ) -> List[Dict[str, Any]]:
+    """
+    Combines transcript sentences with Azure AI Language entities & key phrases
+    to isolate actionable tasks, assignees, and due dates.
+    """
+    if not transcript.strip():
+        return []
+
+    # Split transcript into sentences
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", transcript) if s.strip()]
+
+    entities = nlp_data.get("entities", [])
+    key_phrases = nlp_data.get("key_topics", [])
+
+    # Group recognized entities by category
+    people = [e["text"] for e in entities if e.get("category") == "Person"]
+    dates = [e["text"] for e in entities if e.get("category") == "DateTime"]
+
+    action_items: List[ActionItem] = []
+
+    for sentence in sentences:
+        if ACTION_PATTERNS.search(sentence):
+            sentence_lower = sentence.lower()
+
+            # Match entities and key phrases appearing within this action sentence
+            matched_assignee = next(
+                (p for p in people if p.lower() in sentence_lower), None
+            )
+            matched_due_date = next(
+                (d for d in dates if d.lower() in sentence_lower), None
+            )
+            matched_topics = [
+                kp for kp in key_phrases if kp.lower() in sentence_lower
+            ]
+
+            action_items.append(
+                ActionItem(
+                    task=sentence,
+                    assignee=matched_assignee,
+                    due_date=matched_due_date,
+                    related_topics=matched_topics,
+                    source_sentence=sentence,
+                ).dict()
+            )
+
+    return action_items
