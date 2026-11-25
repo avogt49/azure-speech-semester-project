@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional, List
 import azure.cognitiveservices.speech as speechsdk
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 from pydantic import BaseModel
 from azure.core.credentials import AzureKeyCredential
@@ -23,6 +23,14 @@ import base64
 load_dotenv()
 
 app = FastAPI(title="Azure Speech Semester Project")
+
+"""
+frontend
+"""
+
+@app.get("/")
+async def serve_frontend():
+    return FileResponse("index.html")
 
 """
 pipeline phase 1
