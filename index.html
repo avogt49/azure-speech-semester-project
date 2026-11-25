@@ -518,7 +518,7 @@
 
       // TTS Audio Player (GET /summary-audio)
       const ttsPlayer = document.getElementById('ttsPlayer');
-      const queryParam = data.tss_summary ? `?text=${encodeURIComponent(data.tss_summary)}` : ``;
+      const queryParam = data.tts_summary ? `?text=${encodeURIComponent(data.tts_summary)}` : ``;
       ttsPlayer.src = `/summary-audio${queryParam}`;
     }
 
