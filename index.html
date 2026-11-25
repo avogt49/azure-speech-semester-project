@@ -262,6 +262,7 @@
 <body>
 
   <!-- Side Panel: Previous Reports -->
+  <!-- TODO this is a placeholder at the moment -->
   <aside>
     <div class="sidebar-header">
       <span>Previous Reports</span>
@@ -523,6 +524,7 @@
     }
 
     // --- 5. Fetch & Select Previous Reports ---
+    // TODO temporary implementation - the data structure may change as the database is implemented
     async function fetchReports() {
       try {
         const response = await fetch('/reports');
@@ -555,6 +557,7 @@
       }
     }
 
+    // TODO also temporary 
     async function loadReportDetails(reportSummary) {
       if (reportSummary.transcript) {
         renderResults(reportSummary);

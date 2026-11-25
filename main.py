@@ -532,3 +532,10 @@ def get_summary_audio(text: str = "Here is your generated summary."):
         return Response(content=audio_bytes, media_type="audio/mpeg")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+"""
+TODO - add a GET /reports and GET /reports/{id}, where first one returns 
+like a list of titles and the second one returns all of the stored details
+for that report 
+- then make sure the data structure aggrees with the front end
+"""
