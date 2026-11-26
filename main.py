@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+load_dotenv() # load .env before everything else
+from telemetry import init_telemetry
+init_telemetry() # initialize before Flask or any Azure SDK imports
+
 import asyncio
 import json
 import os
@@ -20,6 +25,16 @@ import re
 
 import base64
 
+#might not need these two 
+import io
+import wave
+
+import subprocess
+
+import shutil
+
+
+
 load_dotenv()
 
 app = FastAPI(title="Azure Speech Semester Project")
@@ -37,30 +52,57 @@ pipeline phase 1
 """
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
-ALLOWED_EXTENSIONS = {".wav", ".mp3"}
-ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3"}
+ALLOWED_EXTENSIONS = {".wav", ".mp3", ".webm"}
+ALLOWED_CONTENT_TYPES = {"audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", 'audio/webm'}
+
 
 
 def _build_audio_config(file_path: str, ext: str) -> speechsdk.audio.AudioConfig:
-    """Builds an Azure AudioConfig for either a WAV or compressed MP3 file."""
-    #TODO the mp3 part doesnt work 
-    if ext == ".mp3":
-        # MP3 requires a compressed PushAudioInputStream
-        compressed_format = speechsdk.audio.AudioStreamFormat(
-            compressed_stream_format=speechsdk.AudioStreamContainerFormat.MP3
+    ext_lower = ext.lower()
+
+    if ext_lower in {".mp3", ".webm", ".mp4", ".m4a", ".ogg"}:
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            raise RuntimeError(
+                "ffmpeg binary not found on PATH. Install ffmpeg (e.g., `apt install ffmpeg` or `brew install ffmpeg`)."
+            )
+
+        cmd = [
+            ffmpeg_bin,
+            "-loglevel", "error",
+            "-i", file_path,
+            "-vn",
+            "-f", "s16le",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            "pipe:1",
+        ]
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"FFmpeg decode failed: {e.stderr.decode(errors='replace')}") from e
+
+        pcm_bytes = result.stdout
+        if not pcm_bytes:
+            raise ValueError(f"Decoded audio is empty (0 bytes) for file: {file_path}")
+
+        stream_format = speechsdk.audio.AudioStreamFormat(
+            samples_per_second=16000, bits_per_sample=16, channels=1
         )
         push_stream = speechsdk.audio.PushAudioInputStream(
-            stream_format=compressed_format
+            stream_format=stream_format
         )
-
-        with open(file_path, "rb") as audio_file:
-            push_stream.write(audio_file.read())
+        push_stream.write(pcm_bytes)
         push_stream.close()
 
-        return speechsdk.audio.AudioConfig(stream=push_stream)
+        audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
+        # Attach stream to audio_config to prevent premature garbage collection
+        audio_config._push_stream = push_stream
+        return audio_config
 
-    # Default: WAV file input
     return speechsdk.audio.AudioConfig(filename=file_path)
+
 
 
 def _run_continuous_recognition(file_path: str, ext: str) -> Dict[str, Any]:
@@ -382,12 +424,13 @@ async def process(audio: UploadFile = File(...)) -> JSONResponse:
     topics = analysis.get("key_topics", [])
     tts_summary = f"Your memo mentions {len(topics)} key topics: "
     #TODO if length is 1, should not be a list.
-    if (len(topics) > 1):
-        for i in range(0, len(topics) - 1):
-            tts_summary += topics[i] + ", "
-        tts_summary += "and " + topics[len(topics) - 1] + ". "
-    else: 
-        tts_summary += topics[0] + ". "
+    if (len(topics) > 0):
+        if (len(topics) > 1):
+            for i in range(0, len(topics) - 1):
+                tts_summary += topics[i] + ", "
+            tts_summary += "and " + topics[len(topics) - 1] + ". "
+        else: 
+            tts_summary += topics[0] + ". "
     overall_tone = analysis.get("sentiment", {}).get("overall", "neutral")
     tts_summary += f"The overall tone is {overall_tone}. "
     #TODO not sure how to do the people and org thing
@@ -395,12 +438,13 @@ async def process(audio: UploadFile = File(...)) -> JSONResponse:
     #TODO maybe should not be plural by default
     tts_summary += f"You have {len(action_items)} action items. "
     #todo, all action items are full sentances (end with periods)
-    if (len(action_items) > 1):
-        for i in range(0, len(action_items) - 1):
-            tts_summary += action_items[i].get("task") + ", "
-        tts_summary += "and " + action_items[len(action_items) - 1].get("task") + ". "
-    else:
-        tts_summary += action_items[0].get("task")
+    if(len(action_items) > 0):
+        if (len(action_items) > 1):
+            for i in range(0, len(action_items) - 1):
+                tts_summary += action_items[i].get("task") + ", "
+            tts_summary += "and " + action_items[len(action_items) - 1].get("task") + ". "
+        else:
+            tts_summary += action_items[0].get("task")
     #return all results as a json summary
     result = {
         "pipeline_step_1": audio_results,
